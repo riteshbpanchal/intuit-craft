@@ -1,0 +1,548 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Ritesh's intuit craft demo
+Metadata:
+  Name: 3-tier application stack
+  version: 1.1.1
+
+Parameters:
+  myKeyPair:
+    Description: Amazon EC2 Key Pair
+    Type: "AWS::EC2::KeyPair::KeyName"
+  InstanceTypeParameter:
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - m1.small
+      - m1.large
+    Description: Enter t2.micro, m1.small, or m1.large. Default is t2.micro.
+    
+    
+
+Mappings:
+  AMIConfig:
+    us-west-1:
+      AMIId: ami-327f5352
+    us-east-1:
+      AMIId: ami-a4c7edb2    
+   
+  CIDRConfig:
+    VPC:
+      CIDR: 10.0.0.0/16
+    Bastion:
+      CIDR: 10.0.1.0/24
+    Public1:
+      CIDR: 10.0.1.0/24
+    Public2:
+      CIDR: 10.0.2.0/24
+    Private1:
+      CIDR: 10.0.3.0/24
+    Private2:
+      CIDR: 10.0.4.0/24
+    SSH:
+      CIDR: 103.15.250.0/24 # CORP International (INTUIT-IN (Building 8 Pritech Tech Park SEZ (EcoSpace) Belandur Village Varthur Hobli, Bangalore, IN))
+      
+
+# set up a VPC with two public subets and two private subnets, create IGW, NatGateway and configure the routetables
+      
+Resources:
+  myVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock:
+        Fn::FindInMap:
+        - CIDRConfig
+        - VPC
+        - CIDR
+      Tags:
+       - Key: env
+         Value: craft
+       - Key: Name
+         Value: craft_vpc
+  mypublicsubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref myVPC
+      CidrBlock:
+        Fn::FindInMap:
+        - CIDRConfig
+        - Public1
+        - CIDR
+      MapPublicIpOnLaunch: 'true'
+      AvailabilityZone:
+        Fn::Select:
+         - 0
+         - Fn::GetAZs: ""
+      Tags:
+       - Key: function
+         Value: webserver
+       - Key: Name
+         Value: PublicSubnet_1 
+  mypublicsubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref myVPC
+      CidrBlock:
+        Fn::FindInMap:
+        - CIDRConfig
+        - Public2
+        - CIDR
+      MapPublicIpOnLaunch: 'true'
+      AvailabilityZone:
+        Fn::Select:
+         - 1
+         - Fn::GetAZs: ""
+      Tags:
+       - Key: function
+         Value: webserver
+       - Key: Name
+         Value: PublicSubnet_2
+  myprivatesubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref myVPC
+      CidrBlock:
+        Fn::FindInMap:
+        - CIDRConfig
+        - Private1
+        - CIDR
+      AvailabilityZone:
+        Fn::Select:
+         - 0
+         - Fn::GetAZs: ""
+      Tags:
+       - Key: function
+         Value: app and db
+       - Key: Name
+         Value: PrivateSubnet_1  
+  myprivatesubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref myVPC
+      CidrBlock:
+        Fn::FindInMap:
+        - CIDRConfig
+        - Private2
+        - CIDR
+      AvailabilityZone:
+        Fn::Select:
+         - 1
+         - Fn::GetAZs: ""
+      Tags:
+       - Key: function
+         Value: app and db         
+       - Key: Name
+         Value: PrivateSubnet_2
+  myInternetGateway:
+    Type: AWS::EC2::InternetGateway
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref myVPC
+      InternetGatewayId: !Ref myInternetGateway
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref myVPC
+      Tags:
+       - Key: Name
+         Value: PublicRouteTable
+  mySubnetRouteTableAssociationPublic1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref mypublicsubnet1
+      RouteTableId: !Ref PublicRouteTable
+  mySubnetRouteTableAssociationPublic2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref mypublicsubnet2
+      RouteTableId: !Ref PublicRouteTable
+  myRouteIgw:
+    Type: AWS::EC2::Route
+    DependsOn: myInternetGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref myInternetGateway
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref myVPC
+      Tags:
+       - Key: Name
+         Value: PrivateRouteTable
+  mySubnetRouteTableAssociationPrivate1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref myprivatesubnet1
+      RouteTableId: !Ref PrivateRouteTable
+  mySubnetRouteTableAssociationPrivate2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref myprivatesubnet2
+      RouteTableId: !Ref PrivateRouteTable    
+  NAT:
+    DependsOn: myInternetGateway
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId:
+        Fn::GetAtt:
+         - EIP
+         - AllocationId
+      SubnetId: !Ref mypublicsubnet1
+  EIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  myRouteNat:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NAT
+
+  ElasticLoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      Subnets:
+      - Ref: mypublicsubnet1
+      - Ref: mypublicsubnet2
+      Listeners:
+      - LoadBalancerPort: '80'
+        InstancePort: '80'
+        Protocol: HTTP
+      HealthCheck:
+        Target:
+          Fn::Join:
+          - ''
+          - - 'HTTP:'
+            - '80'
+            - "/index.html"
+        HealthyThreshold: '3'
+        UnhealthyThreshold: '2'
+        Interval: '30'
+        Timeout: '5'
+      SecurityGroups:
+      - Ref: LoadBalancerSecurityGroup
+      Tags:
+       - Key: Name
+         Value: craft-webELB
+ 
+#create EC2 type S3 IAM role to give read access on objects in S3
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        -
+          PolicyName: Policy
+          PolicyDocument:
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - s3:Get*
+                  - s3:List*
+                Resource: "*" 
+  
+  InstanceProfile:
+      Type: AWS::IAM::InstanceProfile
+      Properties:
+        Path: /
+        Roles:
+        - !Ref Role       
+
+#installed apache on the Web servers using Chef solo       
+ 
+  WebServerLaunchConfig:
+    Type: "AWS::AutoScaling::LaunchConfiguration"
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          commands:
+            chef:
+              command: "yum install https://packages.chef.io/files/stable/chefdk/1.3.43/el/7/chefdk-1.3.43-1.el7.x86_64.rpm -y"
+           
+    Properties:
+      ImageId:
+        Fn::FindInMap:
+        - AMIConfig
+        - Ref: AWS::Region
+        - AMIId
+      KeyName: !Ref myKeyPair
+      InstanceType: !Ref InstanceTypeParameter
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroups:
+      - Ref: PublicSSHSecurityGroup
+      - Ref: WebSecurityGroup
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+          - ''
+          - - "#!/bin/bash -xe\n"
+            - "yum update -y aws-cfn-bootstrap\n"
+            - "/opt/aws/bin/cfn-init -v "
+            - "         --stack "
+            - Ref: AWS::StackName
+            - "         --resource WebServerLaunchConfig"
+            - "         --region "
+            - Ref: AWS::Region
+            - "\n"
+            - "/opt/aws/bin/cfn-signal -e $? "
+            - "         --stack "
+            - Ref: AWS::StackName
+            - "         --resource WebServerAutoScalingGroup"
+            - "         --region "
+            - Ref: AWS::Region
+            - "\n"
+            - "aws s3 cp s3://craft-demo-intuit-1/web_chef.tar.gz /home/ec2-user\n"
+            - "tar xvf /home/ec2-user/web_chef.tar.gz -C /var\n"
+            - "rm -rf /home/ec2-user/web_chef.tar.gz\n"
+            - "chef-solo -j /var/chef/cookbooks/httpd/run.json\n"
+            
+  
+             
+  WebServerAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+      - Ref: mypublicsubnet1
+      - Ref: mypublicsubnet2
+      LaunchConfigurationName: !Ref WebServerLaunchConfig
+      MinSize: '2'
+      MaxSize: '2'
+      DesiredCapacity: '2'
+      LoadBalancerNames:
+        - Ref: ElasticLoadBalancer
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT10M    
+        Count: 2        
+
+#installed tomcat on the app servers using Chef solo       
+   
+  AppServerLaunchConfig:
+    Type: "AWS::AutoScaling::LaunchConfiguration"
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          commands:
+            chef:
+              command: "yum install https://packages.chef.io/files/stable/chefdk/1.3.43/el/7/chefdk-1.3.43-1.el7.x86_64.rpm -y"
+           
+    Properties:
+      ImageId:
+        Fn::FindInMap:
+        - AMIConfig
+        - Ref: AWS::Region
+        - AMIId
+      KeyName: !Ref myKeyPair
+      InstanceType: !Ref InstanceTypeParameter
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroups:
+      - Ref: AppSecurityGroup
+      - Ref: BastionHosttoAppSecurityGroup
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+          - ''
+          - - "#!/bin/bash -xe\n"
+            - "yum update -y aws-cfn-bootstrap\n"
+            - "/opt/aws/bin/cfn-init -v "
+            - "         --stack "
+            - Ref: AWS::StackName
+            - "         --resource AppServerLaunchConfig"
+            - "         --region "
+            - Ref: AWS::Region
+            - "\n"
+            - "/opt/aws/bin/cfn-signal -e $? "
+            - "         --stack "
+            - Ref: AWS::StackName
+            - "         --resource AppServerAutoScalingGroup"
+            - "         --region "
+            - Ref: AWS::Region
+            - "\n"
+            - "aws s3 cp s3://craft-demo-intuit-1/app_chef.tar.gz /home/ec2-user\n"
+            - "tar xvf /home/ec2-user/app_chef.tar.gz -C /var\n"
+            - "rm -rf /home/ec2-user/app_chef.tar.gz\n"
+            - "chef-solo -j /var/chef/cookbooks/tomcat/run.json\n" 
+
+  
+  AppServerAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+      - Ref: myprivatesubnet1
+      - Ref: myprivatesubnet2
+      LaunchConfigurationName: !Ref AppServerLaunchConfig
+      MinSize: '2'
+      MaxSize: '2'
+      DesiredCapacity: '2' 
+    CreationPolicy:
+      ResourceSignal:
+        Count: 2
+        Timeout: PT10M  
+      
+   
+ #deployed MySQL RDS instance in MultiAZ mode.
+ 
+  myDBSubnetGroup: 
+    Type: "AWS::RDS::DBSubnetGroup"
+    Properties: 
+      DBSubnetGroupDescription: "description"
+      SubnetIds: 
+        - Ref: myprivatesubnet1
+        - Ref: myprivatesubnet2
+        
+  MasterDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: 'craftdb'
+      AllocatedStorage: 10
+      DBInstanceClass: 'db.t2.small'
+      Engine: MySQL
+      MasterUsername: 'craftuser'
+      MasterUserPassword: 'craft1234'
+      MultiAZ: 'true'
+      DBSubnetGroupName: !Ref myDBSubnetGroup
+      VPCSecurityGroups: 
+       - Ref: DBEC2SecurityGroup
+      Tags:
+      - Key: Name
+        Value: Master Database
+        
+#Bastion host for remotely manage app servers in private subnets
+ 
+  BastionHost:
+   Type: AWS::EC2::Instance
+   Properties:
+     ImageId:
+       Fn::FindInMap:
+       - AMIConfig
+       - Ref: AWS::Region
+       - AMIId
+     KeyName: !Ref myKeyPair
+     InstanceType: !Ref InstanceTypeParameter
+     SubnetId: !Ref mypublicsubnet1
+     SecurityGroupIds:
+     - Ref: BastionHostSecurityGroup
+     - Ref: PublicSSHSecurityGroup      
+     Tags:
+      - Key: Name
+        Value: BastionHost 
+
+#All the Security Groups
+        
+  BastionHostSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Bastion host SG
+      VpcId: !Ref myVPC
+      Tags:
+      - Key: Name
+        Value: craft-Bastion-SG 
+  
+      
+  BastionHosttoAppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH access to App servers from Bastion host
+      VpcId: !Ref myVPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        SourceSecurityGroupId: !Ref BastionHostSecurityGroup
+      Tags:
+      - Key: Name
+        Value: craft-BastiontoApp-SG
+  
+  PublicSSHSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH access from Intuit IDC corp network
+      VpcId: !Ref myVPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp:
+         Fn::FindInMap:
+         - CIDRConfig
+         - SSH
+         - CIDR
+      Tags:
+      - Key: Name
+        Value: craft-PubSSH-SG
+        
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP access from any
+      VpcId: !Ref myVPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+      Tags:
+      - Key: Name
+        Value: craft-LB-SG
+  
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP access from LB
+      VpcId: !Ref myVPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+      Tags:
+      - Key: Name
+        Value: craft-WebSrv-SG
+  
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow tomcat access from web servers
+      VpcId: !Ref myVPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '8080'
+        ToPort: '8080'
+        SourceSecurityGroupId: !Ref WebSecurityGroup
+      Tags:
+      - Key: Name
+        Value: craft-AppSrv-SG
+        
+  DBEC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Open database for access
+      VpcId: !Ref myVPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '3306'
+        ToPort: '3306'
+        SourceSecurityGroupId: !Ref 'AppSecurityGroup'       
+      Tags:
+      - Key: Name
+        Value: craft-DBSrv-SG 
+    
+Outputs:
+  StackName:
+    Description: Stack Name
+    Value:
+      Ref: AWS::StackName
+
